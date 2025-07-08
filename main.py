@@ -131,6 +131,39 @@ class ScanConverterApp(ctk.CTk):
             self.sct_for_pvw.close()
         self.destroy()
 
+    def roi_start_event(self, event):
+        self.roi_start = (event.x, event.y)
+        if self.roi_rect:
+            self.pvw_canvas.delete(self.roi_rect)
+            self.roi_rect = None
+        self.roi_size_label.configure(text="")
+
+    def roi_drag_event(self, event):
+        if not self.roi_start:
+            return
+        x0, y0 = self.roi_start
+        x1, y1 = event.x, event.y
+        # Remove previous rectangle
+        if self.roi_rect:
+            self.pvw_canvas.delete(self.roi_rect)
+        self.roi_rect = self.pvw_canvas.create_rectangle(x0, y0, x1, y1, outline="red", width=2)
+        width = abs(x1 - x0)
+        height = abs(y1 - y0)
+        self.roi_size_label.configure(text=f"ROI: {width} x {height}")
+
+    def roi_end_event(self, event):
+        if not self.roi_start:
+            return
+        x0, y0 = self.roi_start
+        x1, y1 = event.x, event.y
+        width = abs(x1 - x0)
+        height = abs(y1 - y0)
+        self.roi_size_label.configure(text=f"ROI: {width} x {height}")
+        # Save ROI coordinates if needed
+        self.roi_coords = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        # Optionally: print or use self.roi_coords for cropping
+        self.roi_start = None
+
 if __name__ == "__main__":
     app = ScanConverterApp()
     app.protocol("WM_DELETE_WINDOW", app.on_closing)

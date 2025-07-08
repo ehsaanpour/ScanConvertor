@@ -1,0 +1,10 @@
+env/
+.env
+*.log
+node_modules/
+venv/
+.venv
+SDK/
+ffmpeg-master-latest-win64-gpl/
+.SDK
+.ffmpeg-master-latest-win64-gpl

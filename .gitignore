@@ -8,3 +8,7 @@ SDK/
 ffmpeg-master-latest-win64-gpl/
 .SDK
 .ffmpeg-master-latest-win64-gpl
+.build
+build/
+.dist
+dist/

@@ -2,3 +2,6 @@ customtkinter
 mss
 Pillow
 CTkMessagebox
+sounddevice
+numpy
+

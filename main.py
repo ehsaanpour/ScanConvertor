@@ -4,6 +4,8 @@ import time
 from PIL import Image, ImageTk
 import mss
 from CTkMessagebox import CTkMessagebox
+import sounddevice as sd
+import numpy as np
 
 # Mock device and format lists
 MOCK_DEVICES = ["Decklink 1", "Decklink 2"]
@@ -91,7 +93,7 @@ class ScanConverterApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Scan Converter")
-        self.geometry("1100x700")
+        self.geometry("1100x850")
         self.resizable(False, False)
 
         self.sct = mss.mss()
@@ -101,6 +103,7 @@ class ScanConverterApp(ctk.CTk):
         self.pvw_imgtk = None
         self.pvw_running = True
         self.roi_coords = None
+        self.audio_stream = None
 
         # Title label
         self.title_label = ctk.CTkLabel(self, text="Scan Converter", font=("Arial", 28, "bold"))
@@ -174,6 +177,33 @@ class ScanConverterApp(ctk.CTk):
         self.settings_button = ctk.CTkButton(self.controls_frame, text="Settings", command=self.open_settings)
         self.settings_button.grid(row=0, column=5, padx=10, pady=5)
 
+        # Audio Frame
+        self.audio_frame = ctk.CTkFrame(self.main_frame)
+        self.audio_frame.grid(row=2, column=0, columnspan=2, pady=(20, 0), padx=20, sticky="ew")
+
+        self.audio_label = ctk.CTkLabel(self.audio_frame, text="Audio Source:", font=("Arial", 16, "bold"))
+        self.audio_label.pack(side="left", padx=(20, 10), pady=10)
+
+        self.audio_devices = self.get_audio_devices()
+        self.audio_device_names = [d['name'] for d in self.audio_devices] if self.audio_devices else ["No input devices found"]
+        self.selected_audio_device_name = ctk.StringVar(value=self.audio_device_names[0])
+
+        self.audio_option_menu = ctk.CTkOptionMenu(self.audio_frame, variable=self.selected_audio_device_name, values=self.audio_device_names, command=self.change_audio_device)
+        self.audio_option_menu.pack(side="left", padx=10, pady=10)
+
+        if not self.audio_devices:
+            self.audio_option_menu.configure(state="disabled")
+
+        self.volume_label = ctk.CTkLabel(self.audio_frame, text="Volume:")
+        self.volume_label.pack(side="left", padx=(20, 10), pady=10)
+
+        self.volume_meter = ctk.CTkProgressBar(self.audio_frame, width=250)
+        self.volume_meter.pack(side="left", padx=10, pady=10, expand=True, fill="x")
+        self.volume_meter.set(0)
+
+        if self.audio_devices:
+            self.after(100, lambda: self.change_audio_device(self.selected_audio_device_name.get()))
+
         self.start_pvw_update()
 
     def change_monitor(self, value):
@@ -227,6 +257,45 @@ class ScanConverterApp(ctk.CTk):
     def send_to_pgm(self):
         ctk.CTkMessagebox(title="Info", message="Send to PGM clicked! (Stub)")
 
+    def get_audio_devices(self):
+        try:
+            devices = sd.query_devices()
+            # Filter for devices that have input channels
+            return [d for d in devices if d['max_input_channels'] > 0]
+        except Exception as e:
+            print(f"Error querying audio devices: {e}")
+            CTkMessagebox(title="Audio Error", message=f"Could not find audio devices: {e}")
+            return []
+
+    def audio_callback(self, indata, frames, time, status):
+        """This is called (from a separate thread) for each audio block."""
+        if status:
+            print(status)
+        volume_norm = np.linalg.norm(indata) * 10
+        self.volume_meter.set(min(1.0, volume_norm / 100)) # Clamp value
+
+    def change_audio_device(self, device_name: str):
+        if self.audio_stream:
+            self.audio_stream.stop()
+            self.audio_stream.close()
+            self.audio_stream = None
+        
+        if not self.audio_devices or device_name == "No input devices found":
+            return
+
+        try:
+            device_info = next(d for d in self.audio_devices if d['name'] == device_name)
+            self.audio_stream = sd.InputStream(
+                device=device_info['index'],
+                channels=1,
+                samplerate=int(device_info['default_samplerate']),
+                callback=self.audio_callback)
+            self.audio_stream.start()
+        except Exception as e:
+            self.audio_stream = None
+            print(f"Error starting audio stream: {e}")
+            CTkMessagebox(title="Audio Error", message=f"Failed to start audio stream for {device_name}.")
+
     def open_settings(self):
         CTkMessagebox(title="Settings", message="Settings dialog (to be implemented)")
 
@@ -236,6 +305,9 @@ class ScanConverterApp(ctk.CTk):
 
     def on_closing(self):
         self.pvw_running = False
+        if self.audio_stream:
+            self.audio_stream.stop()
+            self.audio_stream.close()
         # Give the update loop a moment to stop before destroying
         self.after(100, self.destroy)
 

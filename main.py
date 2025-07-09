@@ -5,7 +5,9 @@ from PIL import Image, ImageTk
 import mss
 from CTkMessagebox import CTkMessagebox
 import sounddevice as sd
+
 import numpy as np
+import queue
 
 # Mock device and format lists
 MOCK_DEVICES = ["Decklink 1", "Decklink 2"]
@@ -96,6 +98,18 @@ class ScanConverterApp(ctk.CTk):
         self.geometry("1100x850")
         self.resizable(False, False)
 
+        # Find WASAPI hostapi index
+        self.wasapi_hostapi_index = -1
+        try:
+            hostapis = sd.query_hostapis()
+            for i, api in enumerate(hostapis):
+                if 'WASAPI' in api['name']:
+                    self.wasapi_hostapi_index = i
+                    print(f"Found WASAPI host API at index: {i}")
+                    break
+        except Exception as e:
+            print(f"Could not query host APIs: {e}")
+
         self.sct = mss.mss()
         self.monitor_list = self.sct.monitors[1:]  # mss.monitors[0] is all, [1:] are real
         self.monitor_names = [f"Monitor {i+1}" for i in range(len(self.monitor_list))]
@@ -104,6 +118,8 @@ class ScanConverterApp(ctk.CTk):
         self.pvw_running = True
         self.roi_coords = None
         self.audio_stream = None
+        self.audio_output_stream = None
+        self.audio_queue = queue.Queue()
 
         # Title label
         self.title_label = ctk.CTkLabel(self, text="Scan Converter", font=("Arial", 28, "bold"))
@@ -181,11 +197,11 @@ class ScanConverterApp(ctk.CTk):
         self.audio_frame = ctk.CTkFrame(self.main_frame)
         self.audio_frame.grid(row=2, column=0, columnspan=2, pady=(20, 0), padx=20, sticky="ew")
 
-        self.audio_label = ctk.CTkLabel(self.audio_frame, text="Audio Source:", font=("Arial", 16, "bold"))
+        self.audio_label = ctk.CTkLabel(self.audio_frame, text="Microphone:", font=("Arial", 16, "bold"))
         self.audio_label.pack(side="left", padx=(20, 10), pady=10)
 
         self.audio_devices = self.get_audio_devices()
-        self.audio_device_names = [d['name'] for d in self.audio_devices] if self.audio_devices else ["No input devices found"]
+        self.audio_device_names = [d['name'] for d in self.audio_devices] if self.audio_devices else ["No microphone devices found"]
         self.selected_audio_device_name = ctk.StringVar(value=self.audio_device_names[0])
 
         self.audio_option_menu = ctk.CTkOptionMenu(self.audio_frame, variable=self.selected_audio_device_name, values=self.audio_device_names, command=self.change_audio_device)
@@ -201,8 +217,33 @@ class ScanConverterApp(ctk.CTk):
         self.volume_meter.pack(side="left", padx=10, pady=10, expand=True, fill="x")
         self.volume_meter.set(0)
 
-        if self.audio_devices:
-            self.after(100, lambda: self.change_audio_device(self.selected_audio_device_name.get()))
+
+
+        # Audio Output Frame
+        self.audio_output_frame = ctk.CTkFrame(self.main_frame)
+        self.audio_output_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0), padx=20, sticky="ew")
+
+        self.audio_output_label = ctk.CTkLabel(self.audio_output_frame, text="Audio Output:", font=("Arial", 16, "bold"))
+        self.audio_output_label.pack(side="left", padx=(20, 10), pady=10)
+
+        self.audio_output_devices = self.get_audio_output_devices()
+        self.audio_output_device_names = [d['name'] for d in self.audio_output_devices] if self.audio_output_devices else ["No output devices found"]
+        self.selected_audio_output_device_name = ctk.StringVar(value=self.audio_output_device_names[0])
+
+        self.audio_output_option_menu = ctk.CTkOptionMenu(self.audio_output_frame, variable=self.selected_audio_output_device_name, values=self.audio_output_device_names, command=self.change_audio_output_device)
+        self.audio_output_option_menu.pack(side="left", padx=10, pady=10)
+
+        if not self.audio_output_devices:
+            self.audio_output_option_menu.configure(state="disabled")
+
+        self.output_volume_label = ctk.CTkLabel(self.audio_output_frame, text="Volume:")
+        self.output_volume_label.pack(side="left", padx=(20, 10), pady=10)
+
+        self.output_volume_meter = ctk.CTkProgressBar(self.audio_output_frame, width=250)
+        self.output_volume_meter.pack(side="left", padx=10, pady=10, expand=True, fill="x")
+        self.output_volume_meter.set(0)
+
+
 
         self.start_pvw_update()
 
@@ -252,7 +293,7 @@ class ScanConverterApp(ctk.CTk):
             print("PVW error:", e)
         
         # Schedule next update
-        self.after(50, self.update_pvw_frame)
+        self.after(100, self.update_pvw_frame)
 
     def send_to_pgm(self):
         ctk.CTkMessagebox(title="Info", message="Send to PGM clicked! (Stub)")
@@ -260,41 +301,128 @@ class ScanConverterApp(ctk.CTk):
     def get_audio_devices(self):
         try:
             devices = sd.query_devices()
-            # Filter for devices that have input channels
+            if self.wasapi_hostapi_index != -1:
+                print("Filtering for WASAPI input devices.")
+                return [d for d in devices if d['hostapi'] == self.wasapi_hostapi_index and d['max_input_channels'] > 0]
+            # Fallback if WASAPI is not found
             return [d for d in devices if d['max_input_channels'] > 0]
         except Exception as e:
             print(f"Error querying audio devices: {e}")
             CTkMessagebox(title="Audio Error", message=f"Could not find audio devices: {e}")
             return []
 
+    def get_audio_output_devices(self):
+        try:
+            devices = sd.query_devices()
+            if self.wasapi_hostapi_index != -1:
+                print("Filtering for WASAPI output devices.")
+                return [d for d in devices if d['hostapi'] == self.wasapi_hostapi_index and d['max_output_channels'] > 0]
+            # Fallback if WASAPI is not found
+            return [d for d in devices if d['max_output_channels'] > 0]
+        except Exception as e:
+            print(f"Error querying audio output devices: {e}")
+            return []
     def audio_callback(self, indata, frames, time, status):
         """This is called (from a separate thread) for each audio block."""
         if status:
             print(status)
         volume_norm = np.linalg.norm(indata) * 10
-        self.volume_meter.set(min(1.0, volume_norm / 100)) # Clamp value
+        self.volume_meter.set(min(1.0, volume_norm / 100))  # Clamp value
+        self.audio_queue.put(indata.copy())
+
+    def audio_output_callback(self, outdata, frames, time, status):
+        """This is called for each audio block to be sent to the output device."""
+        if status:
+            print(f"Audio output status: {status}")
+        try:
+            data = self.audio_queue.get_nowait()
+            # Update volume meter based on the data being played
+            volume_norm = np.linalg.norm(data) * 10
+            self.output_volume_meter.set(min(1.0, volume_norm / 100))
+        except queue.Empty:
+            # Fill with silence if no data is available
+            outdata.fill(0)
+            self.output_volume_meter.set(0)
+            return
+
+        outdata[:] = data
 
     def change_audio_device(self, device_name: str):
+        self.reconfigure_audio_streams()
+
+    def change_audio_output_device(self, device_name: str):
+        self.reconfigure_audio_streams()
+
+    def start_streams(self, input_device_info, output_device_info, samplerate):
+        try:
+            self.audio_stream = sd.InputStream(
+                device=input_device_info['index'],
+                samplerate=samplerate,
+                channels=1,
+                callback=self.audio_callback)
+
+            self.audio_output_stream = sd.OutputStream(
+                device=output_device_info['index'],
+                samplerate=samplerate,
+                channels=1,
+                callback=self.audio_output_callback)
+
+            self.audio_stream.start()
+            self.audio_output_stream.start()
+            print(f"Successfully started streams at {samplerate} Hz")
+            return True
+        except Exception as e:
+            print(f"Failed to start streams at {samplerate} Hz: {e}")
+            # Make sure to clean up if one stream opened but the other failed
+            if self.audio_stream:
+                self.audio_stream.close()
+                self.audio_stream = None
+            if self.audio_output_stream:
+                self.audio_output_stream.close()
+                self.audio_output_stream = None
+            return False
+
+    def reconfigure_audio_streams(self):
+        # 1. Stop and close any existing streams
         if self.audio_stream:
             self.audio_stream.stop()
             self.audio_stream.close()
             self.audio_stream = None
-        
-        if not self.audio_devices or device_name == "No input devices found":
+        if self.audio_output_stream:
+            self.audio_output_stream.stop()
+            self.audio_output_stream.close()
+            self.audio_output_stream = None
+
+        # Clear the queue
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # 2. Get selected devices
+        input_device_name = self.selected_audio_device_name.get()
+        output_device_name = self.selected_audio_output_device_name.get()
+
+        if not input_device_name or input_device_name == "No microphone devices found":
+            return
+        if not output_device_name or output_device_name == "No output devices found":
             return
 
         try:
-            device_info = next(d for d in self.audio_devices if d['name'] == device_name)
-            self.audio_stream = sd.InputStream(
-                device=device_info['index'],
-                channels=1,
-                samplerate=int(device_info['default_samplerate']),
-                callback=self.audio_callback)
-            self.audio_stream.start()
-        except Exception as e:
-            self.audio_stream = None
-            print(f"Error starting audio stream: {e}")
-            CTkMessagebox(title="Audio Error", message=f"Failed to start audio stream for {device_name}.")
+            input_device_info = next(d for d in self.audio_devices if d['name'] == input_device_name)
+            output_device_info = next(d for d in self.audio_output_devices if d['name'] == output_device_name)
+        except StopIteration:
+            return
+
+        # 3. Find a working sample rate and start streams
+        standard_rates = [48000, 44100, 32000, 22050, 16000]
+        for rate in standard_rates:
+            if self.start_streams(input_device_info, output_device_info, rate):
+                return # Success
+
+        # If loop finishes, no rate worked
+        CTkMessagebox(title="Audio Error", message="Could not find a compatible audio format for the selected devices.")
 
     def open_settings(self):
         CTkMessagebox(title="Settings", message="Settings dialog (to be implemented)")
@@ -308,6 +436,9 @@ class ScanConverterApp(ctk.CTk):
         if self.audio_stream:
             self.audio_stream.stop()
             self.audio_stream.close()
+        if self.audio_output_stream:
+            self.audio_output_stream.stop()
+            self.audio_output_stream.close()
         # Give the update loop a moment to stop before destroying
         self.after(100, self.destroy)
 
